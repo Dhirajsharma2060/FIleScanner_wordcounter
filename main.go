@@ -5,7 +5,6 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
-	"hash/fnv"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -27,62 +26,39 @@ func main() {
 
 	numWorkers := runtime.NumCPU()
 	fileChan := make(chan string, 100)
+	resultChan := make(chan map[string]int, numWorkers)
 	var wg sync.WaitGroup
 
-	numAggregators := 4
-	aggChans := make([]chan map[string]int, numAggregators)
-	aggResultChan := make(chan map[string]int, numAggregators)
-	var aggWg sync.WaitGroup
-
-	for i := 0; i < numAggregators; i++ {
-		aggChans[i] = make(chan map[string]int, 100)
-		aggWg.Add(1)
-		go func(idx int) {
-			defer aggWg.Done()
-			localAgg := make(map[string]int)
-			for localMap := range aggChans[idx] {
-				for word, count := range localMap {
-					localAgg[word] += count
-				}
-			}
-			aggResultChan <- localAgg
-		}(i)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+	var once sync.Once
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
-		cancel() // Cancel the context when signal received
+		once.Do(cancel)
 	}()
+	defer once.Do(cancel)
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for file := range fileChan {
-				localFreq := make(map[string]int)
-				lines, err := processFileParallel(file, localFreq)
-				if err != nil {
-					fmt.Printf("[Worker %d] Error reading %s: %v\n", workerID, file, err)
-					continue // Skip sending data for this file
-				}
-
-				fmt.Printf("[Worker %d] File: %s, Lines: %d\n", workerID, file, lines)
-
-				// Only process successful reads
-				for word, count := range localFreq {
-					idx := int(hashWord(word)) % numAggregators
-					aggChans[idx] <- map[string]int{word: count}
-				}
-
+			for {
 				select {
 				case <-ctx.Done():
 					return
-				default:
+				case file, ok := <-fileChan:
+					if !ok {
+						return
+					}
+					localFreq := make(map[string]int)
+					lines, err := processFileParallel(file, localFreq)
+					if err != nil {
+						fmt.Printf("[Worker %d] Error reading %s: %v\n", workerID, file, err)
+						continue
+					}
+					fmt.Printf("[Worker %d] File: %s, Lines: %d\n", workerID, file, lines)
+					resultChan <- localFreq
 				}
 			}
 		}(i)
@@ -97,20 +73,15 @@ func main() {
 	fmt.Printf("Found %d text files. Using %d workers.\n", fileCount, numWorkers)
 
 	wg.Wait()
-	for _, ch := range aggChans {
-		close(ch)
-	}
-	aggWg.Wait()
+	close(resultChan)
 
 	aggStart := time.Now()
 	wordFreq := make(map[string]int)
-	for i := 0; i < numAggregators; i++ {
-		local := <-aggResultChan
+	for local := range resultChan {
 		for word, count := range local {
 			wordFreq[word] += count
 		}
 	}
-	close(aggResultChan)
 	aggElapsed := time.Since(aggStart)
 	fmt.Printf("Aggregation time: %s\n", aggElapsed)
 
@@ -223,10 +194,4 @@ func normalizeWord(word string) string {
 		}
 	}
 	return b.String()
-}
-
-func hashWord(word string) uint32 {
-	h := fnv.New32a()
-	h.Write([]byte(word))
-	return h.Sum32()
 }
