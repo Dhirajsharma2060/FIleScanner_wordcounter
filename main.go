@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 )
@@ -49,6 +51,13 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		<-sigChan
+		cancel() // Cancel the context when signal received
+	}()
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
