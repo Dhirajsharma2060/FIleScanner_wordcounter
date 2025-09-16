@@ -23,27 +23,19 @@ The tool is a concurrent, pipeline-based CLI application written in Go. It effic
 +-------------------+
           |
           v
-+-------------------+      +-------------------+
-|   Worker Pool     | ---> |   Aggregator Pool |
-| (Consumers)       |      | (Sharded by hash) |
-+-------------------+      +-------------------+
-          |                        |
-          +------------------------+
-                   |
-                   v
-           +-----------------+
-           |   Final Merge   |
-           +-----------------+
-                   |
-                   v
-           +-----------------+
-           |   Top-K Heap    |
-           +-----------------+
-                   |
-                   v
-           +-----------------+
-           |     Output      |
-           +-----------------+
++-------------------+
+|   Worker Pool     |  (Consumers)
++-------------------+
+          |
+          v
++-------------------+
+|   Main Goroutine  |  (Aggregation & Top-K)
++-------------------+
+          |
+          v
++-------------------+
+|     Output        |
++-------------------+
 ```
 
 ---
@@ -54,12 +46,9 @@ The tool is a concurrent, pipeline-based CLI application written in Go. It effic
   - The directory walker (producer) streams file paths to a buffered channel.
   - Multiple worker goroutines (consumers) process files concurrently.
 
-- **Sharded Aggregation:**  
-  - Each worker sends its local word frequency map to one of several aggregator goroutines, chosen by hashing the file name.
-  - Each aggregator merges results into its own map, reducing contention.
-
-- **Final Merge:**  
-  - After all aggregators finish, their maps are merged into a single global map.
+- **Direct Aggregation:**  
+  - Each worker sends its local word frequency map to a single results channel (`resultChan`).
+  - The main goroutine merges all results into a global map.
 
 - **Top-K Calculation:**  
   - A min-heap is used to efficiently extract the top K most frequent words.
@@ -75,18 +64,12 @@ The tool is a concurrent, pipeline-based CLI application written in Go. It effic
   Each worker:
   - Reads file paths from `fileChan`
   - Counts lines and word frequencies (with normalization)
-  - Sends results to the appropriate aggregator
+  - Sends the entire local frequency map to `resultChan`
 
-- **Aggregator Pool:**  
-  Each aggregator:
-  - Receives word counts from workers (for its shard)
-  - Merges them into a local map
-
-- **Final Aggregation:**  
-  Merges all aggregator maps into a single `wordFreq` map.
-
-- **Top-K Heap:**  
-  Maintains the top K most frequent words using a min-heap for efficiency.
+- **Main Goroutine:**  
+  - Receives all local frequency maps from workers via `resultChan`
+  - Merges them into a single `wordFreq` map
+  - Calculates and prints the top-K words
 
 ---
 
@@ -95,6 +78,7 @@ The tool is a concurrent, pipeline-based CLI application written in Go. It effic
 - All file and directory errors are reported and do not silently fail.
 - The directory walk returns an error if traversal fails.
 - Worker errors are printed with context.
+- Context cancellation is handled for graceful shutdown on SIGINT/SIGTERM.
 
 ---
 
@@ -102,7 +86,6 @@ The tool is a concurrent, pipeline-based CLI application written in Go. It effic
 
 - **Parallelism:**  
   - Number of workers = number of CPU cores (configurable)
-  - Number of aggregators = 4 (configurable)
 - **Memory Efficiency:**  
   - Files are streamed, not preloaded.
   - Only top K words are kept in the heap.
@@ -119,7 +102,7 @@ The tool is a concurrent, pipeline-based CLI application written in Go. It effic
 
 ## 🔧 Extensibility
 
-- Easily configurable for directory, top-K, worker count, and aggregator count.
+- Easily configurable for directory, top-K, and worker count.
 - Can be extended to support other file types or more advanced text processing.
 
 ---
