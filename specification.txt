@@ -1,0 +1,23 @@
+Objective: The purpose of this assignment is to evaluate your skills
+in writing clean, efficient, and maintainable Go code.
+Instructions:
+You are tasked with building a simple command-line tool that performs
+the following tasks:
+
+
+-----------------------------------------------------------------------------
+Task 1: File Scanner
+Create a Go program that scans a given directory and its
+subdirectories for text files.
+For each text file found, the program should print the filename and
+the total number of lines in that file.
+
+------------------------------------------------------------------------------
+
+
+Task 2: Word Frequency Counter
+Extend the program to read each text file and count the frequency of
+each word.
+Consider a word to be any sequence of non-whitespace characters.
+Print the top 10 most frequent words along with their frequencies
+across all the files.
