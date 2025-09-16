@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"container/heap"
+	"context"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -28,7 +29,7 @@ func main() {
 
 	numAggregators := 4
 	aggChans := make([]chan map[string]int, numAggregators)
-	aggResults := make([]map[string]int, numAggregators)
+	aggResultChan := make(chan map[string]int, numAggregators)
 	var aggWg sync.WaitGroup
 
 	for i := 0; i < numAggregators; i++ {
@@ -42,9 +43,12 @@ func main() {
 					localAgg[word] += count
 				}
 			}
-			aggResults[idx] = localAgg
+			aggResultChan <- localAgg
 		}(i)
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
@@ -53,15 +57,24 @@ func main() {
 			for file := range fileChan {
 				localFreq := make(map[string]int)
 				lines, err := processFileParallel(file, localFreq)
-				if err == nil {
-					fmt.Printf("[Worker %d] File: %s, Lines: %d\n", workerID, file, lines)
-				} else {
+				if err != nil {
 					fmt.Printf("[Worker %d] Error reading %s: %v\n", workerID, file, err)
+					continue // Skip sending data for this file
 				}
-				hash := fnv.New32a()
-				hash.Write([]byte(file))
-				aggregatorIndex := hash.Sum32() % uint32(numAggregators)
-				aggChans[aggregatorIndex] <- localFreq
+
+				fmt.Printf("[Worker %d] File: %s, Lines: %d\n", workerID, file, lines)
+
+				// Only process successful reads
+				for word, count := range localFreq {
+					idx := int(hashWord(word)) % numAggregators
+					aggChans[idx] <- map[string]int{word: count}
+				}
+
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
 			}
 		}(i)
 	}
@@ -82,11 +95,13 @@ func main() {
 
 	aggStart := time.Now()
 	wordFreq := make(map[string]int)
-	for _, local := range aggResults {
+	for i := 0; i < numAggregators; i++ {
+		local := <-aggResultChan
 		for word, count := range local {
 			wordFreq[word] += count
 		}
 	}
+	close(aggResultChan)
 	aggElapsed := time.Since(aggStart)
 	fmt.Printf("Aggregation time: %s\n", aggElapsed)
 
@@ -199,4 +214,10 @@ func normalizeWord(word string) string {
 		}
 	}
 	return b.String()
+}
+
+func hashWord(word string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(word))
+	return h.Sum32()
 }
